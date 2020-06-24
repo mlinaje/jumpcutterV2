@@ -4,6 +4,7 @@ import subprocess
 import argparse
 from shutil import rmtree
 from fastVideo import fastVideo
+from fasterVideo import fasterVideo
 
 TEMP_FOLDER = ".TEMP_LONG"
 
@@ -19,15 +20,51 @@ def str2bool(v):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("videoFile", help="the path to the video file you want modified.")
-parser.add_argument("--silentThreshold", "-t", type=float, default=0.04,
-    help="the volume that frames audio needs to surpass to be sounded. It ranges from 0 to 1.")
-parser.add_argument("--frameMargin", "-m", type=int, default=4,
-    help="tells how many frames on either side of speech should be included.")
-parser.add_argument("--splitDuration", "-d", type=int, default=1800,
+parser.add_argument(
+    "-v",
+    "--videoSpeed",
+    type=float,
+    default=1.0,
+    help="the speed that the video plays at.",
+)
+parser.add_argument(
+    "--silentSpeed",
+    "-s",
+    type=float,
+    default=99999,
+    help="the speed that silent frames should be played at.",
+)
+parser.add_argument(
+    "--silentThreshold",
+    "-t",
+    type=float,
+    default=0.04,
+    help="the volume that frames audio needs to surpass to be sounded. It ranges from 0 to 1.",
+)
+parser.add_argument(
+    "--frameMargin",
+    "-m",
+    type=int,
+    default=4,
+    help="tells how many frames on either side of speech should be included.",
+)
+parser.add_argument(
+    "--splitDuration",
+    "-d",
+    type=int,
+    default=1800,
     help="tells how many seconds should the video split chunks be, \
-        use lower values if system has low ram, default 1800 (30 minutes).")
-parser.add_argument("--open", type=str2bool, nargs='?', const=True, default=False,
-    help="open file after processing is complete.")
+        use lower values if system has low ram, default 1800 (30 minutes).",
+)
+parser.add_argument(
+    "--open", 
+    "-o", 
+    type=str2bool, 
+    nargs='?', 
+    const=True, 
+    default=False,
+    help="open file after processing is complete. Accepts boolean as input",
+)
 args = parser.parse_args()
 
 videoFile = args.videoFile
@@ -46,10 +83,22 @@ splitVideo = 'ffmpeg -i "{}" -acodec copy -f segment -segment_time {} -vcodec co
 subprocess.call(splitVideo, shell=True)
 
 # processing
-for files in os.listdir(TEMP_FOLDER):
-    videoPath = "{}/{}".format(TEMP_FOLDER, files)
-    fastVideo(videoPath, args.silentThreshold, args.frameMargin)
-    os.remove(videoPath)
+if args.silentSpeed == 99999 and args.videoSpeed == 1.0:
+    for files in os.listdir(TEMP_FOLDER):
+        videoPath = "{}/{}".format(TEMP_FOLDER, files)
+        fasterVideo(videoPath, args.silentThreshold, args.frameMargin)
+        os.remove(videoPath)
+else:
+    for files in os.listdir(TEMP_FOLDER):
+        videoPath = "{}/{}".format(TEMP_FOLDER, files)
+        fastVideo(
+            videoPath,
+            args.silentSpeed,
+            args.videoSpeed,
+            args.silentThreshold,
+            args.frameMargin,
+        )
+        os.remove(videoPath)
 
 # mergeing
 generateFile = "for f in ./{}/*.mp4; do echo \"file '$f'\" >> mylist.txt; done".format(

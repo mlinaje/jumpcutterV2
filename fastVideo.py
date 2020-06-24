@@ -2,6 +2,8 @@
 import cv2
 import numpy as np
 from scipy.io import wavfile
+from audiotsm import phasevocoder
+from readAudio import ArrReader, ArrWriter
 
 # Internal libraries
 import math
@@ -13,46 +15,18 @@ import argparse
 from shutil import rmtree
 from datetime import timedelta
 
-def getAudioChunks(audioData, sampleRate, frameRate, SILENT_THRESHOLD, FRAME_SPREADAGE):
+nFrames = 0
 
-    def getMaxVolume(s):
-        maxv = float(np.max(s))
-        minv = float(np.min(s))
-        return max(maxv, -minv)
-
-    audioSampleCount = audioData.shape[0]
-    maxAudioVolume = getMaxVolume(audioData)
-
-    samplesPerFrame = sampleRate / frameRate
-    audioFrameCount = int(math.ceil(audioSampleCount / samplesPerFrame))
-    hasLoudAudio = np.zeros((audioFrameCount))
-
-    for i in range(audioFrameCount):
-        start = int(i * samplesPerFrame)
-        end = min(int((i+1) * samplesPerFrame), audioSampleCount)
-        audiochunks = audioData[start:end]
-        maxchunksVolume = getMaxVolume(audiochunks) / maxAudioVolume
-        if(maxchunksVolume >= SILENT_THRESHOLD):
-            hasLoudAudio[i] = 1
-
-    chunks = [[0, 0, 0]]
-    shouldIncludeFrame = np.zeros((audioFrameCount))
-    for i in range(audioFrameCount):
-        start = int(max(0, i-FRAME_SPREADAGE))
-        end = int(min(audioFrameCount, i+1+FRAME_SPREADAGE))
-        shouldIncludeFrame[i] = min(1, np.max(hasLoudAudio[start:end]))
-
-        if (i >= 1 and shouldIncludeFrame[i] != shouldIncludeFrame[i-1]):
-            chunks.append([chunks[-1][1], i, shouldIncludeFrame[i-1]])
-
-    chunks.append([chunks[-1][1], audioFrameCount, shouldIncludeFrame[i-1]])
-    chunks = chunks[1:]
-
-    return chunks
-
-def fastVideo(videoFile, silentThreshold, frameMargin):
+def fastVideo(videoFile, silentSpeed, videoSpeed, silentThreshold, frameMargin):
+    videoFile = videoFile
+    silentSpeed = silentSpeed
+    videoSpeed = videoSpeed
+    silentThreshold = silentThreshold
+    frameMargin = frameMargin
 
     TEMP = ".TEMP"
+    FADE_SIZE = 400
+    NEW_SPEED = [silentSpeed, videoSpeed]
 
     cap = cv2.VideoCapture(videoFile)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -75,56 +49,118 @@ def fastVideo(videoFile, silentThreshold, frameMargin):
     out = cv2.VideoWriter(TEMP + "/spedup.mp4", fourcc, fps, (width, height))
     sampleRate, audioData = wavfile.read(TEMP + "/output.wav")
 
-    chunks = getAudioChunks(audioData, sampleRate, fps, silentThreshold, frameMargin)
-
+    skipped = 0
     channels = int(audioData.shape[1])
+
+    def getMaxVolume(s):
+        try:
+            maxv = np.max(s)
+            minv = np.min(s)
+            return max(maxv, -minv)
+        except ValueError:
+            print("Default")
+            return 1
+
+    switchStart = 0
+    maxVolume = getMaxVolume(audioData)
+
+    needChange = False
+    preve = None
+    endMargin = 0
 
     y = np.zeros_like(audioData, dtype=np.int16)
     yPointer = 0
-    samplesPerFrame = sampleRate / fps
+    frameBuffer = []
 
-    # premask = np.arange(FADE_SIZE) / FADE_SIZE
-    # mask = np.repeat(premask[:, np.newaxis], 2, axis=1)
+    premask = np.arange(FADE_SIZE) / FADE_SIZE
+    mask = np.repeat(premask[:, np.newaxis], 2, axis=1)
+
+    def writeFrames(frames, nAudio, speed, samplePerSecond, writer):
+        numAudioChunks = round(nAudio / samplePerSecond * fps)
+        global nFrames
+        numWrites = numAudioChunks - nFrames
+        nFrames += numWrites  # if sync issue exists, change this back
+        limit = len(frames) - 1
+        for i in range(numWrites):
+            frameIndex = round(i * speed)
+            if frameIndex > limit:
+                writer.write(frames[-1])
+            else:
+                writer.write(frames[frameIndex])
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
+        currentTime = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
+        audioSampleStart = math.floor(currentTime * sampleRate)
 
-        cframe = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) # current frame
-
-        currentTime = cframe / fps
-
-        # handle audio
-        audioSampleStart = int(currentTime * sampleRate)
-        audioSampleEnd = audioSampleStart + (sampleRate // fps)
-        switchEnd = audioSampleEnd
+        audioSampleEnd = min(
+            audioSampleStart + sampleRate // fps * frameMargin, len(audioData)
+        )
+        switchEnd = audioSampleStart + sampleRate // fps
 
         audioChunk = audioData[audioSampleStart:audioSampleEnd]
 
-        state = None
-        normal = True
-        for chunk in chunks:
-            if(cframe >= chunk[0] and cframe <= chunk[1]):
-                state = chunk[2]
-                if(cframe == chunk[1]):
-                    normal = False
-                break
-        if(state == 1):
-            out.write(frame)
+        if getMaxVolume(audioChunk) / maxVolume < silentThreshold:
+            if endMargin < 1:
+                isSilent = 1
+            else:
+                isSilent = 0
+                endMargin -= 1
+        else:
+            isSilent = 0
+            endMargin = frameMargin
+        if preve is not None and preve != isSilent:
+            needChange = True
 
+        preve = isSilent
+
+        if needChange == False:
+            skipped += 1
+            frameBuffer.append(frame)
+        else:
+            theSpeed = NEW_SPEED[isSilent]
+            if theSpeed < 99999:
+                spedChunk = audioData[switchStart:switchEnd]
+                spedupAudio = np.zeros((0, 2), dtype=np.int16)
+                with ArrReader(spedChunk, channels, sampleRate, 2) as reader:
+                    with ArrWriter(spedupAudio, channels, sampleRate, 2) as writer:
+                        phasevocoder(reader.channels, speed=theSpeed).run(
+                            reader, writer
+                        )
+                        spedupAudio = writer.output
+
+                yPointerEnd = yPointer + spedupAudio.shape[0]
+                y[yPointer:yPointerEnd] = spedupAudio
+
+                if spedupAudio.shape[0] < FADE_SIZE:
+                    y[yPointer:yPointerEnd] = 0
+                else:
+                    y[yPointer : yPointer + FADE_SIZE] = (
+                        y[yPointer : yPointer + FADE_SIZE] * mask
+                    )
+                    y[yPointerEnd - FADE_SIZE : yPointerEnd] = (
+                        y[yPointerEnd - FADE_SIZE : yPointerEnd] * 1 - mask
+                    )
+                yPointer = yPointerEnd
+            else:
+                yPointerEnd = yPointer
+
+            writeFrames(frameBuffer, yPointerEnd, NEW_SPEED[isSilent], sampleRate, out)
+            frameBuffer = []
             switchStart = switchEnd
+            needChange = False
 
-            yPointerEnd = yPointer + audioChunk.shape[0]
-            y[yPointer : yPointerEnd] = audioChunk
-            yPointer = yPointerEnd
+        if skipped % 200 == 0:
+            print(f"{skipped} frames inspected")
+            skipped += 1
 
-    # finish audio
     y = y[:yPointer]
-    wavfile.write(TEMP+"/spedupAudio.wav", sampleRate, y)
+    wavfile.write(TEMP + "/spedupAudio.wav", sampleRate, y)
 
-    if not os.path.isfile(TEMP+"/spedupAudio.wav"):
-        raise IOError('audio file not created.')
+    if not os.path.isfile(TEMP + "/spedupAudio.wav"):
+        raise IOError("the new audio file was not created")
 
     cap.release()
     out.release()

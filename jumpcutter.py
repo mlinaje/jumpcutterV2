@@ -7,12 +7,27 @@ from fastVideo import fastVideo
 
 TEMP_FOLDER = ".TEMP_LONG"
 
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 parser = argparse.ArgumentParser()
 parser.add_argument("videoFile", help="the path to the video file you want modified.")
 parser.add_argument("--silentThreshold", "-t", type=float, default=0.04,
     help="the volume that frames audio needs to surpass to be sounded. It ranges from 0 to 1.")
 parser.add_argument("--frameMargin", "-m", type=int, default=4,
     help="tells how many frames on either side of speech should be included.")
+parser.add_argument("--splitDuration", "-d", type=int, default=1800,
+    help="tells how many seconds should the video split chunks be, \
+        use lower values if system has low ram, default 1800 (30 minutes).")
+parser.add_argument("--open", type=str2bool, nargs='?', const=True, default=False,
+    help="open file after processing is complete.")
 args = parser.parse_args()
 
 videoFile = args.videoFile
@@ -25,8 +40,8 @@ except OSError:
 
 # splitting
 filename, filetype = os.path.splitext(videoFile)
-splitVideo = 'ffmpeg -i "{}" -acodec copy -f segment -segment_time 1800 -vcodec copy -reset_timestamps 1 -map 0 {}/%d{}'.format(
-    videoFile, TEMP_FOLDER, filetype
+splitVideo = 'ffmpeg -i "{}" -acodec copy -f segment -segment_time {} -vcodec copy -reset_timestamps 1 -map 0 {}/%d{}'.format(
+    videoFile, args.splitDuration, TEMP_FOLDER, filetype
 )
 subprocess.call(splitVideo, shell=True)
 
@@ -54,15 +69,16 @@ outFile = filename + "_faster.mp4"
 if not os.path.isfile(outFile):
     raise IOError(f"the file {outFile} was not created")
 
-try:  # should work on Windows
-    os.startfile(outFile)
-except AttributeError:
-    try:  # should work on MacOS and most linux versions
-        subprocess.call(["open", outFile])
-    except:
-        try: # should work on WSL2
-            subprocess.call(["cmd.exe", "/C", "start", outFile])
+if args.open:
+    try:  # should work on Windows
+        os.startfile(outFile)
+    except AttributeError:
+        try:  # should work on MacOS and most linux versions
+            subprocess.call(["open", outFile])
         except:
-            print("could not open output file")
+            try: # should work on WSL2
+                subprocess.call(["cmd.exe", "/C", "start", outFile])
+            except:
+                print("could not open output file")
 
 rmtree(TEMP_FOLDER)

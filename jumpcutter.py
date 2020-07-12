@@ -1,3 +1,4 @@
+import glob
 import sys
 import os
 import subprocess
@@ -7,6 +8,8 @@ from fastVideo import fastVideo
 from fasterVideo import fasterVideo
 
 TEMP_FOLDER = ".TEMP_LONG"
+if os.path.exists(TEMP_FOLDER):
+	rmtree(TEMP_FOLDER)
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -82,15 +85,16 @@ splitVideo = 'ffmpeg -i "{}" -acodec copy -f segment -segment_time {} -vcodec co
 )
 subprocess.call(splitVideo, shell=True)
 
+
 # processing
 if args.silentSpeed == 99999 and args.videoSpeed == 1.0:
     for files in os.listdir(TEMP_FOLDER):
-        videoPath = "{}/{}".format(TEMP_FOLDER, files)
+        videoPath = os.path.join('{}', '{}').format(TEMP_FOLDER, files)
         fasterVideo(videoPath, args.silentThreshold, args.frameMargin)
         os.remove(videoPath)
 else:
     for files in os.listdir(TEMP_FOLDER):
-        videoPath = "{}/{}".format(TEMP_FOLDER, files)
+        videoPath = os.path.join('{}', '{}').format(TEMP_FOLDER, files)
         fastVideo(
             videoPath,
             args.silentSpeed,
@@ -100,18 +104,20 @@ else:
         )
         os.remove(videoPath)
 
-# mergeing
-generateFile = "for f in ./{}/*.mp4; do echo \"file '$f'\" >> mylist.txt; done".format(
-    TEMP_FOLDER
-)
-subprocess.call(generateFile, shell=True)
+MyFile=open('mylist.txt','w')
 
-concatVideo = ["ffmpeg", "-f", "concat", "-safe", "0", "-i", "mylist.txt"]
-concatVideo.extend(["-c", "copy", filename + "_faster.mp4"])
+for item in glob.glob(os.path.join('.', TEMP_FOLDER, '*.mp4')):
+	MyFile.write("file '")
+	MyFile.write(item)
+	MyFile.write("'\n")
 
+MyFile.close()
+
+
+concatVideo = ["ffmpeg", "-f", "concat", "-safe", "0", "-i", "mylist.txt", "-c", "copy", filename + "_faster.mp4"]
 subprocess.call(concatVideo)
 
-os.remove("mylist.txt")
+os.remove('mylist.txt')
 
 outFile = filename + "_faster.mp4"
 
